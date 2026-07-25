@@ -1,0 +1,21 @@
+[project]
+name = "sapient-quickstart"
+version = "0.1.0"
+description = "Copy-paste starting point for a SAPIENT ASM node built on cafanasyev-sapient-sdk"
+requires-python = ">=3.11"
+dependencies = [
+    "cafanasyev-sapient-sdk",
+    "python-dotenv>=1",
+]
+
+# This is an application, not a library -- there is nothing here to build
+# into a wheel, just main.py to run directly.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# cafanasyev-sapient-sdk isn't published to PyPI yet, so it resolves from
+# git. Once it's published, delete this table and pin a version instead
+# (e.g. "cafanasyev-sapient-sdk>=0.1.0" above) -- same swap that was done
+# for cafanasyev-sapient-pydantic once py-sapient-proto was published.
+cafanasyev-sapient-sdk = { git = "https://github.com/cafanasyev/py-sapient-sdk", branch = "master" }
