@@ -23,6 +23,13 @@ class _FastNode(FakeNode):
         return make_registration(status_interval_seconds=0.02)
 
 
+class _SlowNode(FakeNode):
+    """Sleeps 5s between status reports, so it never notices going offline itself."""
+
+    async def get_registration(self) -> Registration:
+        return make_registration(status_interval_seconds=5)
+
+
 class _RecordingClient(FakeClient):
     published_before_close: int = -1
 
@@ -73,12 +80,18 @@ async def test_client_closed_once_when_nodes_go_offline_then_dispatcher_closes()
 async def test_goodbyes_go_out_before_the_client_closes() -> None:
     client = _RecordingClient()
     dispatcher = DefaultNodeDispatcher(client=client, config=_config())
-    nodes = [_FastNode(node_id_=uuid.uuid4()) for _ in range(2)]
+    nodes = [_SlowNode(node_id_=uuid.uuid4()) for _ in range(2)]
     for node in nodes:
         node.set_online(True)
         await dispatcher.register(node)
         await _registered(dispatcher, node)
 
+    # Both go offline while their wrappers sleep in the status loop, so both are
+    # still registered and still in the online list. A stopping node that sees
+    # itself offline leaves the online list; the last one to do so must not close
+    # the client before every goodbye is out.
+    for node in nodes:
+        node.set_online(False)
     await dispatcher.close()
 
     goodbyes = [
