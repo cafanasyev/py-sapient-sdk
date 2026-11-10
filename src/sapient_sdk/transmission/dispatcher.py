@@ -56,6 +56,14 @@ def _log_body(message: SapientMessage) -> None:
         logger.debug("message: %s", message.model_dump_json())
 
 
+def _task_summary(task: Task) -> str:
+    command = task.command
+    if command is None:
+        return f"{task.task_id} [command=none]"
+    kind = next((name for name, value in command if value is not None), "none")
+    return f"{task.task_id} [command={kind}, request={command.request}]"
+
+
 _INFO_NEW = status_report_pb2.StatusReport.Info.INFO_NEW
 _INFO_UNCHANGED = status_report_pb2.StatusReport.Info.INFO_UNCHANGED
 _SYSTEM_GOODBYE = status_report_pb2.StatusReport.System.SYSTEM_GOODBYE
@@ -149,14 +157,20 @@ class DefaultNodeDispatcher(NodeDispatcher):
 
         match message:
             case SapientMessage(registration_ack=RegistrationAck() as ack):
-                if node_wrapper is not None:
-                    await self._handle_registration_ack(ack, node_wrapper)
+                if node_wrapper is None:
+                    logger.error("no node registered for destination: %s", node_id)
+                    return
+                await self._handle_registration_ack(ack, node_wrapper)
             case SapientMessage(alert_ack=AlertAck() as ack):
-                if node_wrapper is not None:
-                    await node_wrapper.node.on_alert_ack(ack)
+                if node_wrapper is None:
+                    logger.error("no node registered for destination: %s", node_id)
+                    return
+                await node_wrapper.node.on_alert_ack(ack)
             case SapientMessage(error=Error() as err):
-                if node_wrapper is not None:
-                    await node_wrapper.node.on_error(err)
+                if node_wrapper is None:
+                    logger.error("no node registered for destination: %s", node_id)
+                    return
+                await node_wrapper.node.on_error(err)
             case SapientMessage(task=Task() as task):
                 await self._handle_task(task, node_id, node_wrapper)
 
@@ -185,6 +199,12 @@ class DefaultNodeDispatcher(NodeDispatcher):
             reject_reason = "node offline"
 
         if reject_reason is not None:
+            logger.warning(
+                "rejecting task %s for node %s: %s",
+                _task_summary(task),
+                node_id,
+                reject_reason,
+            )
             rejection = TaskAck(
                 task_id=task.task_id,
                 task_status=task_ack_pb2.TaskAck.TaskStatus.TASK_STATUS_REJECTED,
@@ -194,6 +214,7 @@ class DefaultNodeDispatcher(NodeDispatcher):
             return
 
         assert wrapper is not None
+        logger.info("delivering task %s to node: %s", _task_summary(task), node_id)
         is_registration_request = (
             task.command is not None
             and task.command.request is not None

@@ -5,6 +5,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+import ulid
 from sapient_msg_pydantic.bsi_flex_335_v2_0.registration import Registration
 
 from sapient_sdk.transmission.dispatcher import DefaultNodeDispatcher
@@ -172,3 +173,72 @@ async def test_connection_state_transitions_log_at_info(
 
     server.close()
     await server.wait_closed()
+
+
+async def test_ack_for_unknown_node_logs_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sapient_msg_pydantic.bsi_flex_335_v2_0.registration_ack import RegistrationAck
+    from sapient_msg_pydantic.bsi_flex_335_v2_0.sapient_message import SapientMessage
+
+    caplog.set_level(logging.ERROR, logger="sapient_sdk.transmission.dispatcher")
+    dispatcher = DefaultNodeDispatcher(client=FakeClient(), config=_config())
+    unknown = str(uuid.uuid4())
+    await dispatcher._on_message(
+        SapientMessage(
+            node_id=unknown,
+            destination_id=unknown,
+            registration_ack=RegistrationAck(acceptance=True),
+        )
+    )
+    assert any(
+        "no node registered for destination" in r.message for r in caplog.records
+    )
+    await dispatcher.close()
+
+
+async def test_rejected_task_logs_a_warning_and_delivered_task_logs_info(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sapient_msg_pydantic.bsi_flex_335_v2_0.sapient_message import SapientMessage
+    from sapient_msg_pydantic.bsi_flex_335_v2_0.task import Command, Task
+
+    caplog.set_level(logging.INFO, logger="sapient_sdk.transmission.dispatcher")
+    client = FakeClient()
+    dispatcher = DefaultNodeDispatcher(client=client, config=_config())
+    node = FakeNode(node_id_=uuid.uuid4())
+    node.set_online(True)
+    await dispatcher.register(node)
+    await wait_until(lambda: node.node_id in dispatcher._online)
+
+    def _task(destination: str) -> SapientMessage:
+        return SapientMessage(
+            node_id=str(uuid.uuid4()),
+            destination_id=destination,
+            task=Task(task_id=str(ulid.ULID()), command=Command(request="Start")),
+        )
+
+    await dispatcher._on_message(_task(str(uuid.uuid4())))
+    await dispatcher._on_message(_task(str(node.node_id)))
+
+    assert any(
+        r.levelno == logging.WARNING and "rejecting task" in r.message
+        for r in caplog.records
+    )
+    assert any(
+        r.levelno == logging.INFO and "delivering task" in r.message
+        for r in caplog.records
+    )
+    await dispatcher.close()
+
+
+async def test_reconnect_logs_the_disconnect_duration(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="sapient_sdk.transmission.dispatcher")
+    client = FakeClient()
+    dispatcher = DefaultNodeDispatcher(client=client, config=_config())
+    client.set_state(ConnectionState.DISCONNECTED)
+    client.set_state(ConnectionState.CONNECTED)
+    assert any("disconnect duration" in r.message for r in caplog.records)
+    await dispatcher.close()
