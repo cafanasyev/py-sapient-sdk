@@ -56,6 +56,27 @@ def _log_body(message: SapientMessage) -> None:
         logger.debug("message: %s", message.model_dump_json())
 
 
+_INFO_NEW = status_report_pb2.StatusReport.Info.INFO_NEW
+_INFO_UNCHANGED = status_report_pb2.StatusReport.Info.INFO_UNCHANGED
+_SYSTEM_GOODBYE = status_report_pb2.StatusReport.System.SYSTEM_GOODBYE
+
+
+def _same_content(a: StatusReport, b: StatusReport) -> bool:
+    # report_id is unique per message and info is the field being decided
+    clear = {"report_id": None, "info": None}
+    return a.model_copy(update=clear) == b.model_copy(update=clear)
+
+
+def _info_for(status: StatusReport, previous: StatusReport | None) -> Info:
+    if status.system == _SYSTEM_GOODBYE:
+        return _INFO_NEW
+    if status.info == _INFO_UNCHANGED:
+        return _INFO_UNCHANGED
+    if previous is not None and _same_content(previous, status):
+        return _INFO_UNCHANGED
+    return _INFO_NEW
+
+
 class NodeDispatcher(BaseModel, abc.ABC):
     @abc.abstractmethod
     async def register(self, node: Node) -> None: ...
@@ -84,9 +105,6 @@ class DefaultNodeDispatcher(NodeDispatcher):
     _client_running: bool = PrivateAttr(default=False)
     _disconnected_at: datetime | None = PrivateAttr(default=None)
     _reregistration_epoch: int = PrivateAttr(default=0)
-    _last_status_report: dict[uuid.UUID, StatusReport] = PrivateAttr(
-        default_factory=dict
-    )
     _inbound_messages_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     _closing: bool = PrivateAttr(default=False)
 
@@ -254,30 +272,12 @@ class DefaultNodeDispatcher(NodeDispatcher):
         if wrapper is None:
             return
         await wrapper.close()
-        self._last_status_report.pop(node.node_id, None)
         # If this was the last online node, close the shared client the same
         # way _on_node_offline would — unregister() removes the wrapper here
         # directly rather than through that callback, so it must not skip the
         # check, or the client would leak running with no online nodes left.
         if was_online and not self._online:
             await self._close_client_if_needed()
-
-    def _compute_info(self, node_id: uuid.UUID, status: StatusReport) -> Info:
-        previous = self._last_status_report.get(node_id)
-        if previous is None:
-            return (
-                status.info
-                if status.info is not None
-                else status_report_pb2.StatusReport.Info.INFO_NEW
-            )
-        clear = {"report_id": None, "info": None}
-        if previous.model_copy(update=clear) == status.model_copy(update=clear):
-            return status_report_pb2.StatusReport.Info.INFO_UNCHANGED
-        return (
-            status.info
-            if status.info is not None
-            else status_report_pb2.StatusReport.Info.INFO_NEW
-        )
 
     async def publish(
         self,
@@ -288,6 +288,8 @@ class DefaultNodeDispatcher(NodeDispatcher):
         now = datetime.now(UTC)
         destination_id = self.config.destination_id
         node_id_str = str(node_id)
+        wrapper = self._find_wrapper(node_id)
+        previous: StatusReport | None = None
         match msg:
             case Registration():
                 envelope = SapientMessage(
@@ -297,17 +299,16 @@ class DefaultNodeDispatcher(NodeDispatcher):
                     registration=msg,
                 )
             case StatusReport():
-                # Mutates the caller's StatusReport in place with the computed
-                # dedup info field -- callers must not reuse the same instance
-                # across publish() calls expecting it to stay untouched.
-                if msg.report_id is None:
-                    msg.report_id = str(ULID())
-                msg.info = self._compute_info(node_id, msg)
+                status = msg.model_copy(deep=True)
+                if status.report_id is None:
+                    status.report_id = str(ULID())
+                previous = wrapper.last_status_report if wrapper is not None else None
+                status.info = _info_for(status, previous)
                 envelope = SapientMessage(
                     node_id=node_id_str,
                     destination_id=destination_id,
                     timestamp=now,
-                    status_report=msg,
+                    status_report=status,
                 )
             case TaskAck():
                 envelope = SapientMessage(
@@ -324,23 +325,28 @@ class DefaultNodeDispatcher(NodeDispatcher):
                     alert=msg,
                 )
             case DetectionReport():
-                if msg.report_id is None:
-                    msg.report_id = str(ULID())
+                detection = msg.model_copy(deep=True)
+                if detection.report_id is None:
+                    detection.report_id = str(ULID())
                 envelope = SapientMessage(
                     node_id=node_id_str,
                     destination_id=destination_id,
                     timestamp=now,
-                    detection_report=msg,
+                    detection_report=detection,
                 )
             case _:
                 assert_never(msg)
         logger.info("sending %s to %s", _content_type(envelope), node_id)
         _log_body(envelope)
         await self.client.publish(envelope, timeout)
-        if isinstance(msg, StatusReport):
-            # Commit the dedup baseline only after the send actually succeeded —
-            # last published value must only be committed after a successful send.
-            self._last_status_report[node_id] = msg
+        # stored only after a send without error, and only if no newer report won
+        sent_status = envelope.status_report
+        if (
+            sent_status is not None
+            and wrapper is not None
+            and wrapper.last_status_report is previous
+        ):
+            wrapper.last_status_report = sent_status
         return envelope
 
     async def close(self) -> None:

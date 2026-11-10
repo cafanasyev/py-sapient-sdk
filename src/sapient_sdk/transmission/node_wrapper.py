@@ -95,6 +95,7 @@ class NodeWrapper:
         self.dispatcher = dispatcher
         self.config = config
         self.registered = False
+        self.last_status_report: StatusReport | None = None
         self._registration_epoch = 0
         self._ack_mailbox: asyncio.Queue[RegistrationAck] = asyncio.Queue(maxsize=1)
         self._task: asyncio.Task[None] | None = None
@@ -140,6 +141,7 @@ class NodeWrapper:
                 continue
             await self._run_status_loop(registration)
         await self._send_goodbye_if_registered()
+        self.last_status_report = None
 
     async def _wait_until_online(self) -> None:
         while not await self.node.is_online():
@@ -239,8 +241,11 @@ class NodeWrapper:
             return
         self.registered = False  # no await between check and clear: atomic here
         logger.info("sending GOOD BYE for node: %s", self.node.node_id)
-        goodbye = await self.node.get_status_report()
-        goodbye.system = status_report_pb2.StatusReport.System.SYSTEM_GOODBYE
+        report = await self.node.get_status_report()
+        goodbye = report.model_copy(
+            update={"system": status_report_pb2.StatusReport.System.SYSTEM_GOODBYE},
+            deep=True,
+        )
         try:
             await self.dispatcher.publish(
                 goodbye, self.node.node_id, self.config.publish_timeout

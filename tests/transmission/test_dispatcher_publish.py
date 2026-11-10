@@ -76,7 +76,7 @@ async def test_goodbye_does_not_pollute_the_dedup_baseline() -> None:
     assert sent.status_report.info == _INFO_NEW
 
 
-async def test_unregister_evicts_the_dedup_baseline() -> None:
+async def test_last_report_lives_on_the_node_wrapper() -> None:
     client = FakeClient()
     dispatcher = DefaultNodeDispatcher(client=client, config=_config())
     node = FakeNode(node_id_=uuid.uuid4())
@@ -84,18 +84,18 @@ async def test_unregister_evicts_the_dedup_baseline() -> None:
 
     report = StatusReport(system=_SYSTEM_OK, info=_INFO_NEW, mode="idle")
     await dispatcher.publish(report, node.node_id, timedelta(seconds=1))
-    assert node.node_id in dispatcher._last_status_report
+    assert dispatcher._offline[node.node_id].last_status_report is not None
 
     await dispatcher.unregister(node)
-    assert node.node_id not in dispatcher._last_status_report
-
-    await dispatcher.close()
+    assert dispatcher._find_wrapper(node.node_id) is None
 
 
 async def test_second_identical_status_report_is_downgraded_to_unchanged() -> None:
     client = FakeClient()
     dispatcher = DefaultNodeDispatcher(client=client, config=_config())
-    node_id = uuid.uuid4()
+    node = FakeNode(node_id_=uuid.uuid4())
+    await dispatcher.register(node)
+    node_id = node.node_id
 
     first = StatusReport(system=_SYSTEM_OK, info=_INFO_NEW, mode="idle")
     sent_first = await dispatcher.publish(first, node_id, timedelta(seconds=1))
@@ -106,13 +106,16 @@ async def test_second_identical_status_report_is_downgraded_to_unchanged() -> No
     sent_second = await dispatcher.publish(second, node_id, timedelta(seconds=1))
     assert sent_second.status_report is not None
     assert sent_second.status_report.info == _INFO_UNCHANGED
+    await dispatcher.close()
 
 
 async def test_failed_publish_does_not_commit_the_dedup_baseline() -> None:
     client = FakeClient()
     client.fail_next_publish = True
     dispatcher = DefaultNodeDispatcher(client=client, config=_config())
-    node_id = uuid.uuid4()
+    node = FakeNode(node_id_=uuid.uuid4())
+    await dispatcher.register(node)
+    node_id = node.node_id
 
     report = StatusReport(system=_SYSTEM_OK, info=_INFO_NEW, mode="idle")
     try:
@@ -127,6 +130,7 @@ async def test_failed_publish_does_not_commit_the_dedup_baseline() -> None:
     sent = await dispatcher.publish(report_again, node_id, timedelta(seconds=1))
     assert sent.status_report is not None
     assert sent.status_report.info == _INFO_NEW
+    await dispatcher.close()
 
 
 async def test_publish_auto_populates_status_report_report_id_when_none() -> None:
