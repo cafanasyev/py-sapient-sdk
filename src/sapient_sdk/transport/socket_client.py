@@ -141,7 +141,9 @@ class SocketClient(Client):
             self._set_state(ConnectionState.CONNECTING)
             try:
                 reader, writer = await self.socket_provider.open()
-            except OSError:
+            except Exception as exc:
+                if not isinstance(exc, OSError):
+                    logger.exception("unexpected failure on the connection")
                 self._set_state(ConnectionState.DISCONNECTED)
                 attempt += 1
                 if await self._backoff(attempt):
@@ -157,8 +159,12 @@ class SocketClient(Client):
                 async with asyncio.TaskGroup() as tg:
                     tg.create_task(self._reader_loop(reader))
                     tg.create_task(self._watchdog_loop(writer))
-            except* (asyncio.IncompleteReadError, ConnectionError):
-                pass
+            except* asyncio.IncompleteReadError:
+                logger.info("server closed the connection")
+            except* OSError:
+                logger.exception("server connection failure")
+            except* Exception:
+                logger.exception("unexpected failure on the connection")
             finally:
                 writer.close()
                 self._writer = None
