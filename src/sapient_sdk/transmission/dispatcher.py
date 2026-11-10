@@ -25,7 +25,7 @@ from ulid import ULID
 from sapient_sdk._task_utils import cancel_and_wait, log_task_exception
 from sapient_sdk.transmission.dispatcher_config import NodeDispatcherConfig
 from sapient_sdk.transmission.node import Node
-from sapient_sdk.transmission.node_wrapper import NodeWrapper
+from sapient_sdk.transmission.node_wrapper import THRESHOLD_TOLERANCE, NodeWrapper
 from sapient_sdk.transport.client import Client
 from sapient_sdk.transport.connection_state import ConnectionState
 
@@ -190,23 +190,29 @@ class DefaultNodeDispatcher(NodeDispatcher):
 
     def _on_client_state_change(self, state: ConnectionState, ts: datetime) -> None:
         if state == ConnectionState.DISCONNECTED:
-            if self._disconnected_at is None:  # first-write-wins
+            # only the first DISCONNECTED of an outage counts; later ones come from
+            # failed reconnect cycles and would shrink the measured gap
+            if self._disconnected_at is None:
                 self._disconnected_at = ts
         elif state == ConnectionState.CONNECTED:
             lost = self._disconnected_at
             self._disconnected_at = None
             if lost is None:
                 return
-            gap = (ts - lost) + self.config.connection_loss_detection_delay
-            if (
-                gap.total_seconds()
-                > self.config.reconnect_grace_period.total_seconds() * 0.95
-            ):
+            gap = (ts - lost) + self.client.connection_loss_detection_delay
+            logger.info("disconnect duration %s", gap)
+            grace = self.config.reconnect_grace_period
+            if gap >= grace * THRESHOLD_TOLERANCE:
                 self._reregistration_epoch += 1
+                logger.warning("disconnected longer than %s", grace)
 
     @property
     def reregistration_epoch(self) -> int:
         return self._reregistration_epoch
+
+    @property
+    def connection_loss_detection_delay(self) -> timedelta:
+        return self.client.connection_loss_detection_delay
 
     async def _on_node_online(self, node_id: uuid.UUID) -> None:
         wrapper = self._offline.pop(node_id, None) or self._online.get(node_id)

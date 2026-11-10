@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sapient_msg_pydantic.bsi_flex_335_v2_0.alert import Alert
 from sapient_msg_pydantic.bsi_flex_335_v2_0.detection_report import DetectionReport
@@ -12,12 +12,17 @@ from sapient_msg_pydantic.bsi_flex_335_v2_0.task_ack import TaskAck
 
 
 class FakeDispatcher:
-    def __init__(self) -> None:
+    def __init__(self, detection_delay: timedelta = timedelta(milliseconds=10)) -> None:
         self.online_calls: list[uuid.UUID] = []
         self.offline_calls: list[uuid.UUID] = []
         self.published: list[object] = []
         self._epoch = 0
         self.fail_next_publish = False
+        self.detection_delay = detection_delay
+
+    @property
+    def connection_loss_detection_delay(self) -> timedelta:
+        return self.detection_delay
 
     async def _on_node_online(self, node_id: uuid.UUID) -> None:
         self.online_calls.append(node_id)
@@ -46,6 +51,7 @@ class FakeDispatcher:
         return SapientMessage(
             node_id=node_id_str,
             destination_id=node_id_str,
+            timestamp=datetime.now(UTC),
             registration=msg if isinstance(msg, Registration) else None,
             status_report=msg if isinstance(msg, StatusReport) else None,
         )

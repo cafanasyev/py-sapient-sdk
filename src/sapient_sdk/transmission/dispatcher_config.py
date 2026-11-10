@@ -4,15 +4,16 @@ import uuid
 from datetime import timedelta
 from typing import Self
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class NodeDispatcherConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     online_check_interval: timedelta = timedelta(seconds=5)
     publish_timeout: timedelta = timedelta(seconds=5)
     registration_ack_timeout: timedelta = timedelta(seconds=5)
     reconnect_grace_period: timedelta = timedelta(minutes=2)
-    connection_loss_detection_delay: timedelta
     destination_id: str
     registration_jitter_window: timedelta = timedelta(seconds=2)
 
@@ -26,10 +27,6 @@ class NodeDispatcherConfig(BaseModel):
         return value
 
     @classmethod
-    def defaults(
-        cls, destination_id: str, connection_loss_detection_delay: timedelta
-    ) -> Self:
-        return cls(
-            destination_id=destination_id,
-            connection_loss_detection_delay=connection_loss_detection_delay,
-        )
+    def defaults(cls, destination_id: str) -> Self:
+        """Default intervals. The detection delay comes from the client."""
+        return cls(destination_id=destination_id)

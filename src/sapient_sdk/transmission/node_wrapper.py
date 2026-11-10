@@ -4,7 +4,7 @@ import asyncio
 import functools
 import logging
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from sapient_msg.bsi_flex_335_v2_0 import registration_pb2, status_report_pb2
@@ -28,6 +28,28 @@ from sapient_sdk.transmission.node import Node
 logger = logging.getLogger(__name__)
 
 _STOP_TIMEOUT = timedelta(seconds=5)
+
+# fraction applied to period thresholds so scheduler jitter of a few milliseconds
+# does not hide a real outage right at the boundary
+THRESHOLD_TOLERANCE = 0.95
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def server_retention(
+    status_interval: timedelta, grace: timedelta, detection_delay: timedelta
+) -> timedelta:
+    """How long the server keeps the registration after the last confirmed report.
+
+    3 x status_interval is when the server closes the connection, grace is how long
+    it keeps the registration after that, and the detection delay is taken off
+    because some reports went into a socket the client had not yet seen die.
+    Clamped at zero: a negative window would mean re-registering on every tick.
+    """
+    return max(status_interval * 3 + grace - detection_delay, timedelta(0))
+
 
 _NANOS_PER_UNIT: dict[int, int] = {
     registration_pb2.Registration.TimeUnits.TIME_UNITS_NANOSECONDS: 1,
@@ -53,6 +75,9 @@ class _DispatcherProtocol(Protocol):
 
     @property
     def reregistration_epoch(self) -> int: ...
+
+    @property
+    def connection_loss_detection_delay(self) -> timedelta: ...
 
     async def publish(
         self,
@@ -163,37 +188,49 @@ class NodeWrapper:
                 "registration.status_definition.status_interval must be set"
             )
         status_interval = to_timedelta(status_definition.status_interval)
+        node_id = self.node.node_id
 
-        grace = self.config.reconnect_grace_period
-        server_retention = (
-            status_interval * 3 + grace - self.config.connection_loss_detection_delay
-        ) * 0.95
-        last_sent_at = asyncio.get_running_loop().time()
+        detection_delay = self.dispatcher.connection_loss_detection_delay
+        raw_retention = server_retention(
+            status_interval, self.config.reconnect_grace_period, detection_delay
+        )
+        if raw_retention == timedelta(0):
+            logger.warning(
+                "connection loss detection delay %s eats the whole retention budget"
+                " for node: %s - the node will re-register on every status tick."
+                " Lower the health check interval or the failure threshold.",
+                detection_delay,
+                node_id,
+            )
+        retention = raw_retention * THRESHOLD_TOLERANCE
+        # wall clock, like Java: the monotonic loop clock stops while the machine sleeps
+        last_sent_at = _now()
 
         await asyncio.sleep(phase_offset(status_interval).total_seconds())
 
         while await self.node.is_online() and self.registered:
             if self.dispatcher.reregistration_epoch != self._registration_epoch:
+                logger.info(
+                    "reconnected after grace period, re-registering node: %s", node_id
+                )
                 self.registered = False
                 return
 
-            elapsed = asyncio.get_running_loop().time() - last_sent_at
-            if elapsed > server_retention.total_seconds():
+            if _now() - last_sent_at > retention:
+                logger.info(
+                    "server retention expired for node: %s, re-registering", node_id
+                )
                 self.registered = False
                 return
 
             try:
                 status_report = await self.node.get_status_report()
-                await self.dispatcher.publish(
-                    status_report,
-                    self.node.node_id,
-                    self.config.publish_timeout,
+                sent = await self.dispatcher.publish(
+                    status_report, node_id, self.config.publish_timeout
                 )
-                last_sent_at = asyncio.get_running_loop().time()
+                last_sent_at = sent.timestamp if sent.timestamp is not None else _now()
             except TimeoutError:
-                logger.warning(
-                    "status report publish timeout for node: %s", self.node.node_id
-                )
+                logger.error("status report publish timeout for node: %s", node_id)
 
             await asyncio.sleep(jittered_interval(status_interval).total_seconds())
 

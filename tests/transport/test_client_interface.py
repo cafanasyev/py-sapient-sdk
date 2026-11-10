@@ -30,6 +30,10 @@ class _StubClient(Client):
     def state(self) -> ConnectionState:
         return self._state
 
+    @property
+    def connection_loss_detection_delay(self) -> timedelta:
+        return timedelta(0)
+
     def add_state_change_listener(
         self, listener: Callable[[ConnectionState, datetime], object]
     ) -> None:

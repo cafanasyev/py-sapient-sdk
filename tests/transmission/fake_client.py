@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sapient_msg_pydantic.bsi_flex_335_v2_0.sapient_message import SapientMessage
 
@@ -16,6 +16,7 @@ class FakeClient(Client):
     close_calls: int = 0
     published: list[SapientMessage] = []
     fail_next_publish: bool = False
+    detection_delay: timedelta = timedelta(milliseconds=10)
 
     def model_post_init(self, __context: object) -> None:
         self._listeners = []
@@ -23,7 +24,7 @@ class FakeClient(Client):
 
     def set_state(self, state: ConnectionState) -> None:
         self._state = state
-        ts = datetime.now()
+        ts = datetime.now(UTC)
         for listener in list(self._listeners):
             listener(state, ts)
 
@@ -47,6 +48,10 @@ class FakeClient(Client):
     @property
     def state(self) -> ConnectionState:
         return self._state
+
+    @property
+    def connection_loss_detection_delay(self) -> timedelta:
+        return self.detection_delay
 
     def add_state_change_listener(
         self, listener: Callable[[ConnectionState, datetime], object]

@@ -18,7 +18,13 @@ class Client(BaseModel, abc.ABC):
     async def start(self) -> None: ...
 
     @abc.abstractmethod
-    async def publish(self, msg: SapientMessage, timeout: timedelta) -> None: ...
+    async def publish(self, msg: SapientMessage, timeout: timedelta) -> None:
+        """Sends one message to the server.
+
+        ``timeout`` covers both the wait for the connection and the write. A
+        ``TimeoutError`` raised during the write does not mean the message was not
+        sent: a message already being written is finished and may still arrive.
+        """
 
     @abc.abstractmethod
     def messages(self) -> AsyncIterator[SapientMessage]: ...
@@ -26,6 +32,17 @@ class Client(BaseModel, abc.ABC):
     @property
     @abc.abstractmethod
     def state(self) -> ConnectionState: ...
+
+    @property
+    @abc.abstractmethod
+    def connection_loss_detection_delay(self) -> timedelta:
+        """Worst case time between the network dying and this client reporting
+        DISCONNECTED.
+
+        The dispatcher adds it to the measured reconnect gap and takes it off the
+        server retention window, so both re-registration checks follow the real
+        outage rather than the moment the client happened to notice.
+        """
 
     @property
     def is_connected(self) -> bool:

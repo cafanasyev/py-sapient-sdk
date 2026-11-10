@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
 from datetime import timedelta
 
 from sapient_sdk.transmission.dispatcher_config import NodeDispatcherConfig
@@ -44,17 +43,7 @@ def _build_socket_provider(host: str, port: int) -> SocketProvider:
     return TlsSocketProvider(host=host, port=port, ssl_context=ssl_context)
 
 
-@dataclass
-class ClientSettings:
-    client: SocketClient
-    # Worst-case time between an actual network loss and the client noticing
-    # it (emitting DISCONNECTED) -- see build_socket_client(). NodeDispatcher
-    # uses this to avoid mistaking a short blip for a real outage that
-    # requires re-registration.
-    connection_loss_detection_delay: timedelta
-
-
-def build_socket_client() -> ClientSettings:
+def build_socket_client() -> SocketClient:
     host = os.environ["FUSION_NODE_HOST"]
     port = int(os.environ["FUSION_NODE_PORT"])
     socket_provider = _build_socket_provider(host, port)
@@ -68,29 +57,14 @@ def build_socket_client() -> ClientSettings:
     )
     watchdog_interval = _timedelta_seconds_env("SOCKET_WATCHDOG_INTERVAL_SECONDS", 10)
 
-    client = SocketClient(
+    return SocketClient(
         socket_provider=socket_provider,
         probe_timeout=probe_timeout,
         initial_reconnect_delay=initial_reconnect_delay,
         watchdog_interval=watchdog_interval,
     )
 
-    # The watchdog only probes every watchdog_interval, and a single probe
-    # can itself take up to probe_timeout to fail before the client acts on
-    # it -- so that sum bounds how late DISCONNECTED can be noticed.
-    connection_loss_detection_delay = watchdog_interval + probe_timeout
 
-    return ClientSettings(
-        client=client,
-        connection_loss_detection_delay=connection_loss_detection_delay,
-    )
-
-
-def build_dispatcher_config(
-    connection_loss_detection_delay: timedelta,
-) -> NodeDispatcherConfig:
+def build_dispatcher_config() -> NodeDispatcherConfig:
     destination_id = os.environ["FUSION_NODE_DESTINATION_ID"]
-    return NodeDispatcherConfig.defaults(
-        destination_id=destination_id,
-        connection_loss_detection_delay=connection_loss_detection_delay,
-    )
+    return NodeDispatcherConfig.defaults(destination_id=destination_id)

@@ -71,6 +71,10 @@ class SocketClient(Client):
     def state(self) -> ConnectionState:
         return self._state
 
+    @property
+    def connection_loss_detection_delay(self) -> timedelta:
+        return self.watchdog_interval + self.probe_timeout
+
     def add_state_change_listener(
         self, listener: Callable[[ConnectionState, datetime], object]
     ) -> None:

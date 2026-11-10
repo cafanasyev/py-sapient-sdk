@@ -85,7 +85,6 @@ async def test_full_lifecycle_against_a_fake_fusion_node() -> None:
     client = SocketClient(socket_provider=PlainSocketProvider(host=host, port=port))
     config = NodeDispatcherConfig.defaults(
         destination_id=random_uuid(),
-        connection_loss_detection_delay=timedelta(milliseconds=200),
     ).model_copy(
         update={
             "registration_jitter_window": timedelta(0),

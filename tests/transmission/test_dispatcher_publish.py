@@ -23,7 +23,6 @@ _INFO_UNCHANGED = status_report_pb2.StatusReport.Info.INFO_UNCHANGED
 def _config() -> NodeDispatcherConfig:
     return NodeDispatcherConfig.defaults(
         destination_id=random_uuid(),
-        connection_loss_detection_delay=timedelta(milliseconds=10),
     )
 
 

@@ -37,14 +37,9 @@ async def main() -> None:
     load_dotenv()
     setup_logging()
 
-    client_settings = build_socket_client()
-    client_settings.client.add_state_change_listener(_log_connection_state_change)
-    dispatcher_config = build_dispatcher_config(
-        client_settings.connection_loss_detection_delay
-    )
-    dispatcher = DefaultNodeDispatcher(
-        client=client_settings.client, config=dispatcher_config
-    )
+    client = build_socket_client()
+    client.add_state_change_listener(_log_connection_state_change)
+    dispatcher = DefaultNodeDispatcher(client=client, config=build_dispatcher_config())
     node = QuickstartNode(dispatcher=dispatcher)
     await dispatcher.register(node)
     detection_task = asyncio.create_task(node.send_detection_reports_periodically())

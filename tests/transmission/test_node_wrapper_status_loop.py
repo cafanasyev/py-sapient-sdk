@@ -37,7 +37,6 @@ async def test_status_reports_are_sent_periodically() -> None:
     dispatcher = FakeDispatcher()
     config = NodeDispatcherConfig.defaults(
         destination_id=random_uuid(),
-        connection_loss_detection_delay=timedelta(milliseconds=10),
     ).model_copy(
         update={
             "registration_jitter_window": timedelta(0),
@@ -65,7 +64,6 @@ async def test_epoch_mismatch_triggers_reregistration() -> None:
     dispatcher = FakeDispatcher()
     config = NodeDispatcherConfig.defaults(
         destination_id=random_uuid(),
-        connection_loss_detection_delay=timedelta(milliseconds=10),
     ).model_copy(
         update={
             "registration_jitter_window": timedelta(0),

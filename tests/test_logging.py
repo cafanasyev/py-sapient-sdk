@@ -28,7 +28,6 @@ class _FastNode(FakeNode):
 def _config() -> NodeDispatcherConfig:
     return NodeDispatcherConfig.defaults(
         destination_id=random_uuid(),
-        connection_loss_detection_delay=timedelta(milliseconds=10),
     ).model_copy(
         update={
             "online_check_interval": timedelta(milliseconds=20),
