@@ -88,6 +88,7 @@ class DefaultNodeDispatcher(NodeDispatcher):
         default_factory=dict
     )
     _inbound_messages_task: asyncio.Task[None] | None = PrivateAttr(default=None)
+    _closing: bool = PrivateAttr(default=False)
 
     def model_post_init(self, __context: object) -> None:
         self.client.add_state_change_listener(self._on_client_state_change)
@@ -212,15 +213,16 @@ class DefaultNodeDispatcher(NodeDispatcher):
         if wrapper is None:
             return  # unregistered before it finished coming online
         self._online[node_id] = wrapper
-        if len(self._online) == 1:
-            await self.client.start()
+        if self._online and not self._client_running:
             self._client_running = True
+            await self.client.start()
 
     async def _on_node_offline(self, node_id: uuid.UUID) -> None:
         wrapper = self._online.pop(node_id, None)
         if wrapper is not None:
             self._offline[node_id] = wrapper
-        if not self._online:
+        # during close() the client is closed last, after every goodbye
+        if not self._online and not self._closing:
             await self._close_client_if_needed()
 
     async def _close_client_if_needed(self) -> None:
@@ -336,8 +338,10 @@ class DefaultNodeDispatcher(NodeDispatcher):
         return envelope
 
     async def close(self) -> None:
-        wrappers = [*self._online.values(), *self._offline.values()]
-        await asyncio.gather(*(w.close() for w in wrappers))
+        logger.info("stopping the dispatcher gracefully")
+        self._closing = True
+        for wrapper in [*self._online.values(), *self._offline.values()]:
+            await wrapper.close()
         self._online.clear()
         self._offline.clear()
 
@@ -345,3 +349,4 @@ class DefaultNodeDispatcher(NodeDispatcher):
         self._inbound_messages_task = None
 
         await self._close_client_if_needed()
+        logger.info("dispatcher stopped")
