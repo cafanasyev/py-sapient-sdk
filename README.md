@@ -73,7 +73,7 @@ The SDK is built around four abstract classes. To familiarize yourself with the 
 
 - [`Node`](src/sapient_sdk/transmission/node.py) — a SAPIENT edge/fusion node you implement (identity, registration, and server-to-node callbacks).
 - [`NodeDispatcher`](src/sapient_sdk/transmission/dispatcher.py) — manages node registration, the keep-alive/status-report lifecycle, and message routing. `DefaultNodeDispatcher` is the built-in implementation.
-- [`Client`](src/sapient_sdk/transport/client.py) — the transport: publish/subscribe typed SAPIENT messages plus connection-state monitoring. `SocketClient` is the built-in TCP implementation.
+- [`Client`](src/sapient_sdk/transport/client.py) — the transport: publish/subscribe typed SAPIENT messages plus connection-state monitoring. `SocketClient` is the built-in TCP implementation. It serializes concurrent publishes through one write lock, served in arrival order. A publish never blocks past its timeout, even when the write stalls. A message already being written is still finished, so a timeout during the write does not mean the message was not sent.
 - [`SocketProvider`](src/sapient_sdk/transport/socket_provider.py) — supplies the socket (host/port and TLS vs. plain) to the client. `PlainSocketProvider` covers plain TCP, `TlsSocketProvider` covers TLS/mTLS.
 
 Add the SDK to your project. Note: `sapient-sdk` itself is not yet published to
@@ -96,7 +96,7 @@ pip install sapient-sdk
 
       Using this factory is optional: implement `SocketProvider` yourself to supply any `ssl.SSLContext` (or socket) you like.
     * Instantiate [`NodeDispatcherConfig`](src/sapient_sdk/transmission/dispatcher_config.py).
-    * Instantiate [`SocketClient`](src/sapient_sdk/transport/socket_client.py).
+    * Instantiate [`SocketClient`](src/sapient_sdk/transport/socket_client.py), e.g. `SocketClient(socket_provider=..., health_check=HealthCheckConfig(...))`. The health check settings are explained in [Health checks](#health-checks) below.
     * Instantiate `DefaultNodeDispatcher(client=..., config=...)`.
 
    [`examples/quickstart`](examples/quickstart) wires all of the above together into a copy-paste starting point that serves as a reference implementation using this SDK — see its README for what to configure and run against a real fusion node.
@@ -107,6 +107,48 @@ pip install sapient-sdk
    * Use the dispatcher to send Detection Reports/Alerts/Task Acks via the typed `dispatcher.publish(msg, node_id, timeout)` method;
    * You can invoke sending of Registrations/Status Reports outside of the dispatcher's automatic lifecycle — for example if you want to notify the server about some changes immediately without waiting for the next interval — using the same `publish(...)` method;
    * Call [`client.add_state_change_listener(...)`](src/sapient_sdk/transport/client.py) to subscribe to connection state changes (and `remove_state_change_listener(...)` to unsubscribe). You may want to log or run additional logic when, for example, the connection is lost for a prolonged period. You can also poll the connection directly with `client.state`, `client.is_connected`, and `await client.probe_reachable(timeout)`.
+
+### Health checks
+
+The client watches the connection with one health check. Pick the type that matches your network and the server's keepalive setting.
+
+```python
+from datetime import timedelta
+
+from sapient_sdk.transport.health.config import HealthCheckConfig, HealthCheckType
+from sapient_sdk.transport.socket_client import SocketClient
+
+health = HealthCheckConfig(
+    # NETCAT | ICMP | ECHO | PINGPONG
+    type=HealthCheckType.NETCAT,
+    # how often a check starts
+    interval=timedelta(seconds=10),
+    # how long one check may take, never above the interval
+    timeout=timedelta(seconds=2),
+    # failures in a row before the connection is dropped
+    failure_threshold=3,
+)
+
+# initial_reconnect_delay is the pause before the first reconnect attempt. It grows
+# linearly with each failed attempt (1s, 2s, 3s ...) up to 10x and resets after a
+# successful connect.
+client = SocketClient(
+    socket_provider=provider,
+    health_check=health,
+    initial_reconnect_delay=timedelta(seconds=1),
+)
+```
+
+| Type | How it works | When to use it |
+|---|---|---|
+| `NETCAT` | Opens and closes a throwaway TCP connection | Default. Works everywhere |
+| `ICMP` | Runs the system `ping` | ICMP is allowed between node and server |
+| `ECHO` | Sends a zero-length frame, the server echoes it | Server runs in `echo` mode |
+| `PINGPONG` | Sends a zero-length frame, the server answers `0xFFFFFFFF` | Server runs in `pingpong` mode |
+
+`ECHO` and `PINGPONG` are not compatible with each other. Both send the same ping and answer differently, so the client and the server must use the same one.
+
+Worst case time to notice a dead link is `failure_threshold × interval + timeout`, 32 seconds with the defaults. `DefaultNodeDispatcher` reads it from the client's `connection_loss_detection_delay`, so you never set it twice.
 
 ### Automated Node Lifecycle Behavior
 
@@ -126,6 +168,7 @@ Everything `dispatcher.register(node)` automates for you — you don't need to i
 | Close connection when no nodes are online | Closes the connection once no online nodes are left. | ✅ | ✅ |
 | Re-open connection when a node comes online again | Re-opens the connection if at least one online node reappears. | ✅ | ✅ |
 | Auto `StatusReport.Info = INFO_UNCHANGED` when unchanged | Set automatically if the last message has no changes, so unchanged reports aren't treated as new events. | ✅ | ✅ |
+| Auto-populate `StatusReport.Info` if unset | Fills the mandatory field before sending: `INFO_UNCHANGED` when the content repeats the previous report, `INFO_NEW` otherwise. A GOOD BYE report always gets `INFO_NEW`. An explicit `INFO_UNCHANGED` from the node is kept as sent. | ✅ | ✅ |
 | Auto-populate `StatusReport.ReportId` if blank | Fills in a fresh ULID before sending, so callers don't need to mint one themselves. | ✅ | ✅ |
 | Auto-populate `DetectionReport.ReportId` if blank | Fills in a fresh ULID before sending, so callers don't need to mint one themselves. | ✅ | ✅ |
 

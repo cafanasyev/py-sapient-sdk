@@ -47,13 +47,15 @@ uv run python main.py
 
 | `.env` setting | Default | What it controls |
 |---|---|---|
-| `SOCKET_PROBE_TIMEOUT_SECONDS` | 2s | How long a single liveness probe may take before the watchdog gives up on it. |
+| `SOCKET_HEALTH_CHECK_TYPE` | `netcat` | Which liveness check runs: `netcat`, `icmp`, `echo` or `pingpong`. See the SDK README, section "Health checks". |
+| `SOCKET_HEALTH_CHECK_INTERVAL_SECONDS` | 10s | How often a check starts. |
+| `SOCKET_HEALTH_CHECK_TIMEOUT_SECONDS` | 2s | How long one check may take. Never above the interval. |
+| `SOCKET_HEALTH_CHECK_FAILURE_THRESHOLD` | 3 | Failed checks in a row before the connection is dropped. |
 | `SOCKET_INITIAL_RECONNECT_DELAY_SECONDS` | 1s | Base delay for reconnect backoff (attempt *N* waits `min(N, 10) × initial_reconnect_delay`). |
-| `SOCKET_WATCHDOG_INTERVAL_SECONDS` | 10s | How often the watchdog probes the connection for liveness. |
-| *(computed, not a setting)* `connection_loss_detection_delay` | `watchdog_interval + probe_timeout` | Worst-case time between an actual network loss and the client noticing it. `NodeDispatcher` uses this to avoid mistaking a short blip for a real outage that requires re-registration — don't set it independently of the two values above. |
+| *(computed, not a setting)* `connection_loss_detection_delay` | `failure_threshold × interval + timeout` | Worst-case time between an actual network loss and the client noticing it. The client reports it and `NodeDispatcher` reads it from there. |
 | *(not in `.env` here)* `reconnect_grace_period` | 2 minutes (SDK default, not overridden here) | How long the fusion node is assumed to retain a registration after a disconnect, per BSI Flex 335 v2.0 §4.9. Only change this if your fusion node's actual retention window differs from the spec. |
 
-The first three defaults match `SocketClient`'s own built-in defaults — this
+The first five defaults match `SocketClient`'s own built-in defaults — this
 example just makes them overridable per-deployment via `.env` instead of
 requiring a code change, the same way Java's test-harness exposes them via
 `application.properties`.
