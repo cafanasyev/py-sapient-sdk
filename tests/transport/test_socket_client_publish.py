@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+import sapient_sdk.transport.framing as framing_module
 import sapient_sdk.transport.socket_client as socket_client_module
 from sapient_sdk.transport.connection_state import ConnectionState
 from sapient_sdk.transport.framing import read_framed
@@ -86,18 +87,19 @@ async def test_publish_timeout_does_not_poison_the_shared_closed_watcher(
     await client.start()
     await wait_until(lambda: client.state == ConnectionState.CONNECTED)
 
-    async def _hang(writer: object, payload: bytes) -> None:
-        await asyncio.sleep(999)
+    real_write_all = framing_module.write_all
 
-    monkeypatch.setattr(socket_client_module, "write_framed", _hang)
+    async def _slow(writer: asyncio.StreamWriter, data: bytes) -> None:
+        await asyncio.sleep(0.2)
+        await real_write_all(writer, data)
+
+    monkeypatch.setattr(socket_client_module, "write_all", _slow)
 
     msg = make_sapient_message(status_report=make_status_report())
-    with pytest.raises(TimeoutError, match="timed out"):
+    with pytest.raises(TimeoutError, match="publish timeout"):
         await client.publish(msg, timedelta(milliseconds=50))
 
-    monkeypatch.undo()
-
-    # Must succeed, not raise "SocketClient is closed".
+    # the stuck write releases the lock after 0.2s; this publish waits for it
     await client.publish(msg, timedelta(seconds=2))
 
     await client.close()
@@ -105,21 +107,24 @@ async def test_publish_timeout_does_not_poison_the_shared_closed_watcher(
     await server.wait_closed()
 
 
-async def test_publish_converts_connection_error_to_timeout_error(
+async def test_write_that_keeps_failing_times_out_at_the_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server, host, port = await start_loopback_server()
-    client = SocketClient(socket_provider=PlainSocketProvider(host=host, port=port))
+    client = SocketClient(
+        socket_provider=PlainSocketProvider(host=host, port=port),
+        initial_reconnect_delay=timedelta(milliseconds=10),
+    )
     await client.start()
     await wait_until(lambda: client.state == ConnectionState.CONNECTED)
 
-    async def _boom(writer: object, payload: bytes) -> None:
+    async def _boom(writer: asyncio.StreamWriter, data: bytes) -> None:
         raise ConnectionResetError("boom")
 
-    monkeypatch.setattr(socket_client_module, "write_framed", _boom)
+    monkeypatch.setattr(socket_client_module, "write_all", _boom)
 
     msg = make_sapient_message(status_report=make_status_report())
-    with pytest.raises(TimeoutError, match="connection lost"):
+    with pytest.raises(TimeoutError, match="publish timeout"):
         await client.publish(msg, timedelta(seconds=1))
 
     await client.close()

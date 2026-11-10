@@ -7,6 +7,7 @@ import os
 from datetime import timedelta
 
 from sapient_sdk.transmission.dispatcher_config import NodeDispatcherConfig
+from sapient_sdk.transport.health.config import HealthCheckConfig, HealthCheckType
 from sapient_sdk.transport.socket_client import SocketClient
 from sapient_sdk.transport.socket_provider import (
     PlainSocketProvider,
@@ -48,20 +49,24 @@ def build_socket_client() -> SocketClient:
     port = int(os.environ["FUSION_NODE_PORT"])
     socket_provider = _build_socket_provider(host, port)
 
-    # These three match SocketClient's own built-in defaults, and are
-    # readable from .env so you can tune them per-deployment (e.g. a laggier
-    # network) without touching code.
-    probe_timeout = _timedelta_seconds_env("SOCKET_PROBE_TIMEOUT_SECONDS", 2)
-    initial_reconnect_delay = _timedelta_seconds_env(
-        "SOCKET_INITIAL_RECONNECT_DELAY_SECONDS", 1
+    # The defaults below match SocketClient's own built-in defaults. They are
+    # readable from .env so you can tune them per deployment without code changes.
+    health_check = HealthCheckConfig(
+        type=HealthCheckType(
+            os.environ.get("SOCKET_HEALTH_CHECK_TYPE", "netcat").lower()
+        ),
+        interval=_timedelta_seconds_env("SOCKET_HEALTH_CHECK_INTERVAL_SECONDS", 10),
+        timeout=_timedelta_seconds_env("SOCKET_HEALTH_CHECK_TIMEOUT_SECONDS", 2),
+        failure_threshold=int(
+            os.environ.get("SOCKET_HEALTH_CHECK_FAILURE_THRESHOLD", "3")
+        ),
     )
-    watchdog_interval = _timedelta_seconds_env("SOCKET_WATCHDOG_INTERVAL_SECONDS", 10)
-
     return SocketClient(
         socket_provider=socket_provider,
-        probe_timeout=probe_timeout,
-        initial_reconnect_delay=initial_reconnect_delay,
-        watchdog_interval=watchdog_interval,
+        health_check=health_check,
+        initial_reconnect_delay=_timedelta_seconds_env(
+            "SOCKET_INITIAL_RECONNECT_DELAY_SECONDS", 1
+        ),
     )
 
 

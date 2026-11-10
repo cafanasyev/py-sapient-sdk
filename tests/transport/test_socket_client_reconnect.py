@@ -105,19 +105,7 @@ async def test_publish_succeeds_after_reconnect() -> None:
 
 
 async def test_close_during_backoff_stops_the_loop_without_another_attempt() -> None:
-    # No server listening at all: every connection attempt fails immediately,
-    # so the client sits in its backoff sleep. close() during that sleep must
-    # win — no further transition should occur afterward.
-    #
-    # Note on what this actually proves: _run_loop's backoff sleep is
-    # asyncio.wait_for(self._closed_event.wait(), timeout=delay), so close()
-    # setting that event wakes the sleep directly and _run_loop observes
-    # self._closed_event.is_set() on its very next loop check -- this is now
-    # the primary mechanism, not a fallback. close()'s unconditional
-    # task.cancel() remains a second, independent guarantee (matters if the
-    # task is suspended anywhere other than this wait_for). This test
-    # verifies the end-to-end guarantee callers actually depend on -- no
-    # transition after close() -- not which specific mechanism produced it.
+    # No server: the probe fails silently and the client sits in its backoff sleep.
     client = SocketClient(
         socket_provider=PlainSocketProvider(host="127.0.0.1", port=1),
         initial_reconnect_delay=timedelta(seconds=5),
@@ -126,12 +114,12 @@ async def test_close_during_backoff_stops_the_loop_without_another_attempt() -> 
     client.add_state_change_listener(lambda state, ts: seen.append(state))
 
     await client.start()
-    await wait_until(lambda: ConnectionState.DISCONNECTED in seen)
+    await asyncio.sleep(0.1)
     await client.close()
+    assert seen == [ConnectionState.CLOSED]
 
-    count_before = len(seen)
     await asyncio.sleep(0.2)
-    assert len(seen) == count_before  # nothing further was emitted
+    assert seen == [ConnectionState.CLOSED]
 
 
 async def _hold_open(
