@@ -4,7 +4,16 @@ import asyncio
 
 import pytest
 
-from sapient_sdk.transport.framing import read_framed, write_framed
+from sapient_sdk.transport.framing import (
+    DEFAULT_MAX_FRAME_SIZE,
+    FrameTooLargeError,
+    check_frame_size,
+    encode_frame,
+    encode_prefix,
+    read_framed,
+    read_length,
+    write_framed,
+)
 
 
 async def test_round_trips_through_a_pipe() -> None:
@@ -59,3 +68,43 @@ async def test_read_framed_raises_on_truncated_stream() -> None:
     writer.close()
     server.close()
     await server.wait_closed()
+
+
+def test_zero_length_is_allowed() -> None:
+    check_frame_size(0, DEFAULT_MAX_FRAME_SIZE)
+
+
+def test_exactly_max_is_allowed() -> None:
+    check_frame_size(DEFAULT_MAX_FRAME_SIZE, DEFAULT_MAX_FRAME_SIZE)
+
+
+def test_one_byte_over_max_is_rejected() -> None:
+    with pytest.raises(FrameTooLargeError):
+        check_frame_size(DEFAULT_MAX_FRAME_SIZE + 1, DEFAULT_MAX_FRAME_SIZE)
+
+
+@pytest.mark.parametrize("length", [0xFFFFFFFF, 0x7FFFFFFF, 0x80000000])
+def test_huge_lengths_are_rejected(length: int) -> None:
+    with pytest.raises(FrameTooLargeError):
+        check_frame_size(length, DEFAULT_MAX_FRAME_SIZE)
+
+
+def test_custom_limit_is_applied() -> None:
+    check_frame_size(100, 100)
+    with pytest.raises(FrameTooLargeError):
+        check_frame_size(101, 100)
+
+
+def test_default_limit_is_16_mib() -> None:
+    assert DEFAULT_MAX_FRAME_SIZE == 16 * 1024 * 1024
+
+
+def test_frame_is_little_endian_prefix_plus_body() -> None:
+    assert encode_frame(b"ab") == b"\x02\x00\x00\x00ab"
+    assert encode_prefix(0xFFFFFFFF) == b"\xff\xff\xff\xff"
+
+
+async def test_read_length_reads_an_unsigned_prefix() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"\xff\xff\xff\xff")
+    assert await read_length(reader) == 0xFFFFFFFF
