@@ -16,7 +16,7 @@ from sapient_msg_pydantic.bsi_flex_335_v2_0.sapient_message import SapientMessag
 from sapient_msg_pydantic.bsi_flex_335_v2_0.status_report import StatusReport
 from sapient_msg_pydantic.bsi_flex_335_v2_0.task_ack import TaskAck
 
-from sapient_sdk._task_utils import cancel_and_wait, log_task_exception
+from sapient_sdk._task_utils import log_task_exception
 from sapient_sdk.transmission.dispatcher_config import NodeDispatcherConfig
 from sapient_sdk.transmission.jitter import (
     jittered_interval,
@@ -26,6 +26,8 @@ from sapient_sdk.transmission.jitter import (
 from sapient_sdk.transmission.node import Node
 
 logger = logging.getLogger(__name__)
+
+_STOP_TIMEOUT = timedelta(seconds=5)
 
 _NANOS_PER_UNIT: dict[int, int] = {
     registration_pb2.Registration.TimeUnits.TIME_UNITS_NANOSECONDS: 1,
@@ -89,25 +91,38 @@ class NodeWrapper:
             pass  # drop and let the caller's timeout fire
 
     async def _run(self) -> None:
+        node_id = self.node.node_id
+        while True:
+            try:
+                await self._run_once()
+            except TimeoutError as exc:
+                logger.error("lifecycle timeout for node: %s: %s", node_id, exc)
+            except Exception:
+                logger.exception("node lifecycle error: %s", node_id)
+            finally:
+                if not await self.node.is_online():
+                    await self.dispatcher._on_node_offline(node_id)
+
+    async def _run_once(self) -> None:
         await self._wait_until_online()
         await self.dispatcher._on_node_online(self.node.node_id)
-
-        try:
-            while await self.node.is_online():
-                registration = await self._register()
-                if registration is None:
-                    continue
-                await self._run_status_loop(registration)
-        finally:
-            await self._send_goodbye_if_registered()
-            if not await self.node.is_online():
-                await self.dispatcher._on_node_offline(self.node.node_id)
+        while await self.node.is_online():
+            registration = await self._register()
+            if registration is None:
+                await asyncio.sleep(
+                    self.config.registration_ack_timeout.total_seconds()
+                )
+                continue
+            await self._run_status_loop(registration)
+        await self._send_goodbye_if_registered()
 
     async def _wait_until_online(self) -> None:
         while not await self.node.is_online():
             await asyncio.sleep(self.config.online_check_interval.total_seconds())
 
     async def _register(self) -> Registration | None:
+        # acks go to the mailbox only while not registered, see offer_registration_ack
+        self.registered = False
         while not self._ack_mailbox.empty():
             self._ack_mailbox.get_nowait()  # drain any stale ack from a previous cycle
 
@@ -115,24 +130,24 @@ class NodeWrapper:
         await asyncio.sleep(delay.total_seconds())
 
         registration = await self.node.get_registration()
-        try:
-            await self.dispatcher.publish(
-                registration, self.node.node_id, self.config.publish_timeout
-            )
-        except TimeoutError:
-            logger.warning(
-                "registration publish timeout for node: %s", self.node.node_id
-            )
-            return None
+        await self.dispatcher.publish(
+            registration, self.node.node_id, self.config.publish_timeout
+        )
 
+        ack_timeout = self.config.registration_ack_timeout
         try:
             ack = await asyncio.wait_for(
-                self._ack_mailbox.get(),
-                timeout=self.config.registration_ack_timeout.total_seconds(),
+                self._ack_mailbox.get(), timeout=ack_timeout.total_seconds()
             )
-        except TimeoutError:
-            logger.warning("registration ack timeout for node: %s", self.node.node_id)
-            return None
+        except TimeoutError as exc:
+            logger.error(
+                "registration ack timeout for node: %s after %s",
+                self.node.node_id,
+                ack_timeout,
+            )
+            raise TimeoutError(
+                f"registration ack timeout for node: {self.node.node_id}"
+            ) from exc
 
         if not ack.acceptance:
             return None
@@ -197,6 +212,16 @@ class NodeWrapper:
             logger.warning("goodbye publish timeout for node: %s", self.node.node_id)
 
     async def close(self) -> None:
+        logger.info("stopping node: %s gracefully", self.node.node_id)
         task, self._task = self._task, None  # no await between claim and clear
-        await cancel_and_wait(task)
+        if task is not None:
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=_STOP_TIMEOUT.total_seconds())
+            if not done:
+                logger.error(
+                    "node: %s did not stop within %s, it may still publish",
+                    self.node.node_id,
+                    _STOP_TIMEOUT,
+                )
         await self._send_goodbye_if_registered()
+        logger.info("node: %s gracefully stopped", self.node.node_id)

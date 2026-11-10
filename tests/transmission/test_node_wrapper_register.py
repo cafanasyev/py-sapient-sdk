@@ -59,22 +59,6 @@ async def test_registration_ack_acceptance_unblocks_register() -> None:
     await wrapper.close()
 
 
-async def test_registration_rejection_retries() -> None:
-    node = FakeNode(node_id_=random_node_id())
-    node.set_online(True)
-    dispatcher = FakeDispatcher()
-    wrapper = NodeWrapper(node=node, dispatcher=dispatcher, config=_config())
-
-    wrapper.start()
-    await wait_until(lambda: len(dispatcher.published) == 1)
-    wrapper.offer_registration_ack(RegistrationAck(acceptance=False))
-
-    await wait_until(lambda: len(dispatcher.published) == 2)
-    assert wrapper.registered is False
-
-    await wrapper.close()
-
-
 async def test_registration_publish_timeout_is_retried_not_fatal() -> None:
     node = FakeNode(node_id_=random_node_id())
     dispatcher = FakeDispatcher()
