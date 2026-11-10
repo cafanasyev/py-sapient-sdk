@@ -130,3 +130,18 @@ async def test_write_that_keeps_failing_times_out_at_the_deadline(
     await client.close()
     server.close()
     await server.wait_closed()
+
+
+async def test_close_while_a_publish_waits_fails_it_at_once() -> None:
+    client = SocketClient(socket_provider=PlainSocketProvider(host="127.0.0.1", port=1))
+    await client.start()
+    msg = make_sapient_message(status_report=make_status_report())
+    publisher = asyncio.ensure_future(client.publish(msg, timedelta(seconds=5)))
+    await asyncio.sleep(0.05)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await client.close()
+    with pytest.raises(TimeoutError, match="SocketClient is closed"):
+        await publisher
+    assert loop.time() - started < 0.5
